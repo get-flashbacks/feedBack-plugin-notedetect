@@ -15154,8 +15154,18 @@ function createNoteDetector(options = {}) {
         _extSubscribe();
     }
 
+    // Set once by destroy() — a permanent tombstone. Guards enable() and the
+    // construct-time auto-enable retry against resurrecting an instance the
+    // bootstrap has already replaced (e.g. a version-mismatched singleton on
+    // an HMR/double-load reload): destroy() can run mid-flight relative to a
+    // still-pending autoEnableAttempt/setTimeout, and without this check that
+    // callback would happily re-open audio on an instance nothing references
+    // anymore.
+    let destroyed = false;
+
     let enableInFlight = null;
     function enable() {
+        if (destroyed) return Promise.resolve(false);
         if (enableInFlight) return enableInFlight;
         if (enabled) return Promise.resolve(true);
         enableInFlight = (async () => {
@@ -15400,6 +15410,7 @@ function createNoteDetector(options = {}) {
     }
 
     function destroy() {
+        destroyed = true;
         // Silent disable on teardown: calling plain disable() would
         // fire showSummary() (publishing `notedetect:session` and
         // building the summary overlay) for any instance with ≥5
@@ -18767,6 +18778,10 @@ function createNoteDetector(options = {}) {
         // retry runs un-suppressed so a genuinely unusable device is still
         // surfaced.
         const autoEnableAttempt = (retriesLeft) => {
+            // destroy() may have already tombstoned this instance (e.g. the
+            // bootstrap replaced a version-mismatched singleton) before this
+            // retry's setTimeout fires.
+            if (destroyed) return;
             // Re-check BOTH enabled and detectPreference each attempt. A fast
             // user click could have already enabled us (`enabled`), and
             // another surface (settings sync, headless toggle) could have
@@ -18935,6 +18950,16 @@ const _ndExistingDefault = (window.noteDetect
         && window.noteDetect._ndVersion === _ND_VERSION)
     ? window.noteDetect
     : null;
+// A version-mismatched singleton is about to be replaced (below), not reused
+// — tear it down first so its listeners/timers/audio resources and Detect
+// button don't keep running alongside the replacement (duplicate mic capture,
+// duplicate controls). Only reachable on the HMR/double-load path: a same-
+// version reload takes the `_ndExistingDefault` branch above and never gets
+// here, so this never fires (and never costs anything) on a normal load.
+if (!_ndExistingDefault && window.noteDetect
+        && typeof window.noteDetect.destroy === 'function') {
+    try { window.noteDetect.destroy(); } catch (_) { /* best-effort */ }
+}
 const _ndDefaultInstance = _ndExistingDefault || createNoteDetector({ isDefault: true });
 window.noteDetect = _ndDefaultInstance;
 window.createNoteDetector = createNoteDetector;
