@@ -316,7 +316,7 @@ const _ND_AUTO_ENABLE_RETRY_MS = 1500;
 // exact build that produced it. The script tag has no `import`/`fetch`
 // hook to read package.json at load time, so this is the single
 // hand-maintained constant the diagnostic path keys off of.
-const _ND_VERSION = '1.32.0';
+const _ND_VERSION = '1.33.0';
 
 // Bleed-rescue tuning for the low-bass blind spot. A bass DI's fundamental is
 // weaker than its 2nd harmonic and an open string / neighbour often rings the
@@ -2385,6 +2385,15 @@ async function _ndCrepeDetect(buffer) {
 //   container    — DOM parent for the instance's HUD/panels
 //                  (default: document.getElementById('player'))
 //   channel      — -1 (mono mix, default), 0 (left), 1 (right)
+//   deviceId     — browser MediaDeviceInfo.deviceId to open this instance's
+//                  getUserMedia stream against (default: '' — the browser's
+//                  default input). Per-instance: seeds this instance's own
+//                  `selectedDeviceId` closure var, independent of whatever
+//                  the default singleton has persisted. Used by splitscreen
+//                  to bind each panel to a distinct physical microphone/
+//                  interface rather than only a channel of a shared one.
+//                  No effect on the desktop engine-bridge path, which
+//                  doesn't open its own getUserMedia — see setDevice().
 //   audioStream  — optional shared MediaStream (borrowing mode)
 //   audioCtx     — optional shared AudioContext (borrowing mode)
 //   isDefault    — true for the singleton; only the default instance
@@ -2397,6 +2406,9 @@ async function _ndCrepeDetect(buffer) {
 //   isEnabled()      — current toggle state
 //   getStats()       — {hits, misses, streak, bestStreak, accuracy, sectionStats}
 //   setChannel(idx)  — -1=mono, 0=left, 1=right (restarts audio if enabled)
+//   setDevice(id)    — bind this instance's getUserMedia capture to a specific
+//                      deviceId ('' = default input); restarts audio if enabled
+//   getDevice()      — this instance's currently-bound deviceId ('' = default)
 //   injectButton(bar)— insert detect + gear buttons into a control bar
 //   showSummary()    — force-show the end-of-song summary modal
 
@@ -2840,6 +2852,19 @@ function createNoteDetector(options = {}) {
             && a && typeof a.setSourceVerifierOffset === 'function') {
             try { a.setSourceVerifierOffset(sourceId, _ndVerifierOffsetMs / 1000); } catch (_) { /* best-effort */ }
         }
+    }
+
+    // opts.deviceId overrides the persisted deviceId for this instance (used by
+    // splitscreen to bind each panel to a distinct physical input device rather
+    // than only a channel of one shared device). `selectedDeviceId` is already a
+    // per-instance closure variable (seeded from the shared localStorage default
+    // above), so this just lets a caller start the instance on a different device
+    // without touching the singleton's persisted setting — saveSettings() below
+    // remains a no-op for non-default instances, so this never leaks back to
+    // localStorage. Has no effect on the desktop engine-bridge capture path,
+    // which doesn't open its own getUserMedia stream.
+    if (typeof opts.deviceId === 'string') {
+        selectedDeviceId = opts.deviceId;
     }
 
     // opts.channel overrides the persisted channel for this instance (used by
@@ -12057,6 +12082,41 @@ function createNoteDetector(options = {}) {
         return true;
     }
 
+    // Bind THIS instance's getUserMedia capture to a specific physical input
+    // device — the per-instance counterpart to setChannel(), so splitscreen
+    // (or any multi-instance caller) can give each detector its own
+    // microphone/interface instead of only a channel split of one shared
+    // device. '' selects the browser's default input. Only affects the
+    // browser capture path (openInstrumentStream's constraints.audio.deviceId);
+    // the desktop engine-bridge path owns its own device selection via the
+    // Input Setup wizard and ignores this.
+    //
+    // Deliberately does NOT call saveSettings() unconditionally the way
+    // onDeviceChange() (the shared settings-panel handler) does — saveSettings()
+    // already no-ops for non-default instances, so a per-panel setDevice() call
+    // never overwrites the singleton's persisted device, but we still route
+    // through it (not bypass it) so the *default* instance keeps behaving
+    // exactly as before if it calls this directly.
+    function setDevice(deviceId) {
+        if (typeof deviceId !== 'string') {
+            console.warn(`[note_detect] setDevice: invalid deviceId ${deviceId}; expected a string ('' for default input).`);
+            return false;
+        }
+        // No-op on the unchanged device: restartAudio() tears down and
+        // reopens the MediaStream/AudioContext, which is audible (a gap or
+        // pop) and not free — skip it when there's nothing to actually
+        // rebind.
+        if (selectedDeviceId === deviceId) return true;
+        selectedDeviceId = deviceId;
+        saveSettings();
+        restartAudio();
+        return true;
+    }
+
+    function getDevice() {
+        return selectedDeviceId;
+    }
+
     // Set the per-source capture-latency correction (milliseconds) and apply it
     // live to the bound engine source. The host (splitscreen) calls this from a
     // per-panel control so the user can dial in an extra device's timing.
@@ -15094,8 +15154,18 @@ function createNoteDetector(options = {}) {
         _extSubscribe();
     }
 
+    // Set once by destroy() — a permanent tombstone. Guards enable() and the
+    // construct-time auto-enable retry against resurrecting an instance the
+    // bootstrap has already replaced (e.g. a version-mismatched singleton on
+    // an HMR/double-load reload): destroy() can run mid-flight relative to a
+    // still-pending autoEnableAttempt/setTimeout, and without this check that
+    // callback would happily re-open audio on an instance nothing references
+    // anymore.
+    let destroyed = false;
+
     let enableInFlight = null;
     function enable() {
+        if (destroyed) return Promise.resolve(false);
         if (enableInFlight) return enableInFlight;
         if (enabled) return Promise.resolve(true);
         enableInFlight = (async () => {
@@ -15340,6 +15410,7 @@ function createNoteDetector(options = {}) {
     }
 
     function destroy() {
+        destroyed = true;
         // Silent disable on teardown: calling plain disable() would
         // fire showSummary() (publishing `notedetect:session` and
         // building the summary overlay) for any instance with ≥5
@@ -18225,6 +18296,14 @@ function createNoteDetector(options = {}) {
             };
         },
         setChannel,
+        setDevice,
+        getDevice,
+        // Stamped with the version that built this instance so the bootstrap's
+        // singleton-reuse guard (below) can tell a stale HMR/double-load
+        // survivor apart from a current one — an old instance's closures don't
+        // have whatever methods a newer screen.js version added, so it must
+        // NOT be reused as-is. See the "Singleton + bootstrap" section.
+        _ndVersion: _ND_VERSION,
         setVerifierOffset,
         getVerifierOffset,
         injectButton,
@@ -18699,6 +18778,10 @@ function createNoteDetector(options = {}) {
         // retry runs un-suppressed so a genuinely unusable device is still
         // surfaced.
         const autoEnableAttempt = (retriesLeft) => {
+            // destroy() may have already tombstoned this instance (e.g. the
+            // bootstrap replaced a version-mismatched singleton) before this
+            // retry's setTimeout fires.
+            if (destroyed) return;
             // Re-check BOTH enabled and detectPreference each attempt. A fast
             // user click could have already enabled us (`enabled`), and
             // another surface (settings sync, headless toggle) could have
@@ -18850,9 +18933,33 @@ function _ndInstallPlaySongHook() {
 // buttons and per-instance DOM on every reload. Pair this with the
 // playSong-wrapper idempotency guard already in place; both together
 // keep double-load end-to-end idempotent.
-const _ndExistingDefault = (window.noteDetect && typeof window.noteDetect.injectButton === 'function')
+//
+// Reuse is gated on `_ndVersion` matching this evaluation's `_ND_VERSION`,
+// not just `injectButton` existing. A retained instance built by an OLDER
+// screen.js is missing whatever public methods a newer version added (e.g.
+// setDevice/getDevice added in 1.33.0) — those closures were never wired
+// into it and can't be bolted on after the fact, so reusing it as "the
+// current API" would leave callers of the new methods hitting a
+// TypeError until a full page reload. A version mismatch falls through to
+// building a fresh instance instead, at the cost of losing that stale
+// instance's in-progress session state — an acceptable trade for an
+// HMR/double-load edge case that already lacked API-completeness
+// guarantees in the pre-version-check reuse path.
+const _ndExistingDefault = (window.noteDetect
+        && typeof window.noteDetect.injectButton === 'function'
+        && window.noteDetect._ndVersion === _ND_VERSION)
     ? window.noteDetect
     : null;
+// A version-mismatched singleton is about to be replaced (below), not reused
+// — tear it down first so its listeners/timers/audio resources and Detect
+// button don't keep running alongside the replacement (duplicate mic capture,
+// duplicate controls). Only reachable on the HMR/double-load path: a same-
+// version reload takes the `_ndExistingDefault` branch above and never gets
+// here, so this never fires (and never costs anything) on a normal load.
+if (!_ndExistingDefault && window.noteDetect
+        && typeof window.noteDetect.destroy === 'function') {
+    try { window.noteDetect.destroy(); } catch (_) { /* best-effort */ }
+}
 const _ndDefaultInstance = _ndExistingDefault || createNoteDetector({ isDefault: true });
 window.noteDetect = _ndDefaultInstance;
 window.createNoteDetector = createNoteDetector;
