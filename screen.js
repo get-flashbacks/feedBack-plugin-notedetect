@@ -12102,6 +12102,11 @@ function createNoteDetector(options = {}) {
             console.warn(`[note_detect] setDevice: invalid deviceId ${deviceId}; expected a string ('' for default input).`);
             return false;
         }
+        // No-op on the unchanged device: restartAudio() tears down and
+        // reopens the MediaStream/AudioContext, which is audible (a gap or
+        // pop) and not free — skip it when there's nothing to actually
+        // rebind.
+        if (selectedDeviceId === deviceId) return true;
         selectedDeviceId = deviceId;
         saveSettings();
         restartAudio();
@@ -18282,6 +18287,12 @@ function createNoteDetector(options = {}) {
         setChannel,
         setDevice,
         getDevice,
+        // Stamped with the version that built this instance so the bootstrap's
+        // singleton-reuse guard (below) can tell a stale HMR/double-load
+        // survivor apart from a current one — an old instance's closures don't
+        // have whatever methods a newer screen.js version added, so it must
+        // NOT be reused as-is. See the "Singleton + bootstrap" section.
+        _ndVersion: _ND_VERSION,
         setVerifierOffset,
         getVerifierOffset,
         injectButton,
@@ -18907,7 +18918,21 @@ function _ndInstallPlaySongHook() {
 // buttons and per-instance DOM on every reload. Pair this with the
 // playSong-wrapper idempotency guard already in place; both together
 // keep double-load end-to-end idempotent.
-const _ndExistingDefault = (window.noteDetect && typeof window.noteDetect.injectButton === 'function')
+//
+// Reuse is gated on `_ndVersion` matching this evaluation's `_ND_VERSION`,
+// not just `injectButton` existing. A retained instance built by an OLDER
+// screen.js is missing whatever public methods a newer version added (e.g.
+// setDevice/getDevice added in 1.33.0) — those closures were never wired
+// into it and can't be bolted on after the fact, so reusing it as "the
+// current API" would leave callers of the new methods hitting a
+// TypeError until a full page reload. A version mismatch falls through to
+// building a fresh instance instead, at the cost of losing that stale
+// instance's in-progress session state — an acceptable trade for an
+// HMR/double-load edge case that already lacked API-completeness
+// guarantees in the pre-version-check reuse path.
+const _ndExistingDefault = (window.noteDetect
+        && typeof window.noteDetect.injectButton === 'function'
+        && window.noteDetect._ndVersion === _ND_VERSION)
     ? window.noteDetect
     : null;
 const _ndDefaultInstance = _ndExistingDefault || createNoteDetector({ isDefault: true });
