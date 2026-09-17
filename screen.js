@@ -2460,6 +2460,16 @@ function _ndScoringHealthy(enabled, usingBridge, extActive, cbFresh) {
 
 function createNoteDetector(options = {}) {
     const opts = options || {};
+    const playerContext = (() => {
+        const raw = opts.player_context || opts.playerContext || opts.context;
+        if (!raw || typeof raw !== 'object') return null;
+        const out = {};
+        for (const key of ['schema', 'session_id', 'player_id', 'profile_id', 'profile_hash',
+            'song_id', 'arrangement_id', 'instrument', 'role', 'skill']) {
+            if (raw[key] != null) out[key] = String(raw[key]);
+        }
+        return out.session_id && out.player_id ? out : null;
+    })();
     // Highway is resolved lazily. A caller can pass `highway` in
     // options for explicit binding (splitscreen per-panel use);
     // otherwise we fall back to `window.highway`, re-checking on
@@ -18113,6 +18123,7 @@ function createNoteDetector(options = {}) {
         const info = currentHw && currentHw.getSongInfo ? currentHw.getSongInfo() : null;
         if (!info) return;
         dispatchInstanceEvent('notedetect:session', {
+            player_context: playerContext ? { ...playerContext } : null,
             title: info.title,
             artist: info.artist,
             arrangement: info.arrangement,

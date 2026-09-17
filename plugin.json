@@ -3,6 +3,17 @@
   "name": "Note Detection",
   "version": "1.33.0",
   "private": false,
+  "standards": ["capability-pipelines.v1"],
+  "capabilities": {
+    "player-identity": {
+      "roles": ["observer"],
+      "observes": ["ready", "changed", "left"],
+      "mode": "active",
+      "compatibility": "none",
+      "safety": "safe",
+      "description": "Carries the detector's immutable player context into finalized session events."
+    }
+  },
   "script": "screen.js",
   "styles": "assets/plugin.css",
   "settings": {
