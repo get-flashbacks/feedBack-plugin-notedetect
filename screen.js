@@ -2461,7 +2461,7 @@ function _ndScoringHealthy(enabled, usingBridge, extActive, cbFresh) {
 function createNoteDetector(options = {}) {
     const opts = options || {};
     const playerContext = (() => {
-        const raw = opts.player_context || opts.playerContext || opts.context;
+        const raw = opts.player_context || opts.playerContext;
         if (!raw || typeof raw !== 'object') return null;
         const out = {};
         for (const key of ['schema', 'session_id', 'player_id', 'profile_id', 'profile_hash',
