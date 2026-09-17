@@ -174,6 +174,28 @@ test('notedetect:session carries the game-scoring additions', () => {
     det.destroy();
 });
 
+test('notedetect:session carries its detector player context without runtime objects', () => {
+    const events = [];
+    const core = loadDetectionCore({
+        sandboxBeforeRun: (sandbox) => { sandbox.dispatchEvent = (ev) => events.push(ev); },
+    });
+    const context = {
+        schema: 'difficulty_ladder.player_context.v1',
+        session_id: 'split-session', player_id: 'player-3', profile_id: 'alex',
+        song_id: 'song.feedpak', arrangement_id: 'lead', instrument: 'guitar',
+        role: 'lead', skill: 'overall', highway: { private: true },
+    };
+    const det = core.createNoteDetector({ player_context: context });
+    for (let i = 0; i < 5; i++) det._recordJudgment(`ctx${i}`, _judgment(true));
+    assert.equal(det.showSummary(), true);
+    const session = events.find(e => e.type === 'notedetect:session');
+    assert.equal(session.detail.player_context.session_id, 'split-session');
+    assert.equal(session.detail.player_context.player_id, 'player-3');
+    assert.equal(session.detail.player_context.arrangement_id, 'lead');
+    assert.equal(Object.hasOwn(session.detail.player_context, 'highway'), false);
+    det.destroy();
+});
+
 test('a clean take publishes fullCombo: true', () => {
     const events = [];
     const core = loadDetectionCore({
