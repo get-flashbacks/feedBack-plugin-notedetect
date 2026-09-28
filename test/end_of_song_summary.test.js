@@ -211,6 +211,92 @@ test('a clean take publishes fullCombo: true', () => {
     det.destroy();
 });
 
+// ── Miss breakdown promoted to normal play (notedetect#2) ────────────────
+// The end-of-song summary's miss-cause breakdown (pure/chord-partial/
+// early/late/sharp/flat, fed by _recordDiagnostic) used to be tuning-mode
+// only. It's now also shown to normal players as a compact one-line
+// summary, while tuning mode keeps the full bars + percentile stats.
+// document.createElement here returns a real (non-swallowing) plain
+// object per call, captured into `created`, so the overlay's innerHTML
+// assignment is actually observable — the default _loader stub proxy
+// swallows every property set.
+function richDocCapturingElements(created) {
+    const mkEl = () => {
+        const el = {
+            style: {}, dataset: {}, innerHTML: '', textContent: '', onclick: null, disabled: false,
+            classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
+            addEventListener() {}, removeEventListener() {},
+            appendChild() { return el; }, removeChild() {}, remove() {},
+            setAttribute() {}, getAttribute() { return null; },
+            querySelector() { return mkEl(); }, querySelectorAll() { return []; },
+            focus() {}, click() {}, closest() { return null; },
+        };
+        created.push(el);
+        return el;
+    };
+    return {
+        getElementById() { return null; },
+        querySelector() { return null; },
+        querySelectorAll() { return []; },
+        createElement() { return mkEl(); },
+        head: mkEl(), body: mkEl(),
+        addEventListener() {}, removeEventListener() {},
+    };
+}
+
+function _overlayHtml(created) {
+    const withPanel = created.find((el) => el.innerHTML.includes('nd-sum-panel'));
+    return withPanel ? withPanel.innerHTML : '';
+}
+
+test('normal play shows a compact miss-breakdown line, not the full tuning-mode bars', () => {
+    const created = [];
+    const core = loadDetectionCore({ sandboxBeforeRun: (sb) => { sb.document = richDocCapturingElements(created); } });
+    const det = core.createNoteDetector();
+    assert.equal(det.isTuningMode(), false, 'tuning mode off by default');
+    // detectedMidi must be non-null for _recordDiagnostic to reach the
+    // timing/pitch checks at all — null falls straight into "pure".
+    for (let i = 0; i < 3; i++) det._recordJudgment(`h${i}`, _judgment(true));
+    det._recordJudgment('m0', _judgment(false, { detectedMidi: 60, timingState: 'LATE' }));
+    det._recordJudgment('m1', _judgment(false, { detectedMidi: 60, pitchState: 'SHARP' }));
+    assert.equal(det.showSummary(), true);
+    const html = _overlayHtml(created);
+    assert.match(html, /nd-sum-miss-compact/, 'compact breakdown line rendered for normal play');
+    assert.match(html, /1 late/);
+    assert.match(html, /1 sharp/);
+    assert.doesNotMatch(html, /Miss Breakdown/, 'full tuning-mode subhead must not appear in normal play');
+    assert.doesNotMatch(html, /nd-sum-bar-row/, 'per-category bars are tuning-mode only');
+    det.destroy();
+});
+
+test('tuning mode still shows the full bars + percentile breakdown', () => {
+    const created = [];
+    const core = loadDetectionCore({ sandboxBeforeRun: (sb) => { sb.document = richDocCapturingElements(created); } });
+    const det = core.createNoteDetector();
+    det.setTuningMode(true);
+    for (let i = 0; i < 3; i++) det._recordJudgment(`h${i}`, _judgment(true));
+    det._recordJudgment('m0', _judgment(false, { detectedMidi: 60, timingState: 'LATE' }));
+    det._recordJudgment('m1', _judgment(false, { detectedMidi: 60, pitchState: 'SHARP' }));
+    assert.equal(det.showSummary(), true);
+    const html = _overlayHtml(created);
+    assert.match(html, /Miss Breakdown/);
+    assert.match(html, /nd-sum-bar-row/);
+    assert.doesNotMatch(html, /nd-sum-miss-compact/, 'the compact line is the normal-play variant, not shown alongside the full one');
+    det.destroy();
+});
+
+test('no misses means no breakdown at all, in either mode', () => {
+    const created = [];
+    const core = loadDetectionCore({ sandboxBeforeRun: (sb) => { sb.document = richDocCapturingElements(created); } });
+    const det = core.createNoteDetector();
+    for (let i = 0; i < 5; i++) det._recordJudgment(`h${i}`, _judgment(true));
+    assert.equal(det.showSummary(), true);
+    const html = _overlayHtml(created);
+    assert.doesNotMatch(html, /nd-sum-miss-compact/);
+    assert.doesNotMatch(html, /Miss Breakdown/);
+    det.destroy();
+});
+
 // ── Results-card share helpers (Copy card / Save) ────────────────────────
 
 test('_ndInstrumentLabel title-cases the arrangement and tolerates empties', () => {
