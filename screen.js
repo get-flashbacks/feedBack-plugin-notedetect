@@ -316,7 +316,7 @@ const _ND_AUTO_ENABLE_RETRY_MS = 1500;
 // exact build that produced it. The script tag has no `import`/`fetch`
 // hook to read package.json at load time, so this is the single
 // hand-maintained constant the diagnostic path keys off of.
-const _ND_VERSION = '1.33.0';
+const _ND_VERSION = '1.34.0';
 
 // Bleed-rescue tuning for the low-bass blind spot. A bass DI's fundamental is
 // weaker than its 2nd harmonic and an open string / neighbour often rings the
@@ -17507,29 +17507,36 @@ function createNoteDetector(options = {}) {
             }
         }
 
-        // Miss-category breakdown (#254 follow-up) — bars sum to total misses
-        // so the dominant failure mode is visible at a glance. Tuning mode
-        // only — normal play sees just the score/grade headline +
-        // per-section bars.
+        // Miss-category breakdown (#254 follow-up, promoted to normal play
+        // by notedetect#2). Bars sum to total misses so the dominant
+        // failure mode is visible at a glance. Tuning mode gets the full
+        // breakdown (bars + percentile timing/pitch error stats, meant for
+        // debugging); normal play gets a compact one-line summary of the
+        // same underlying _diagBreakdown counts — same data/classification,
+        // just less of it and no dev-facing percentile stats.
+        const BREAKDOWN_LABELS = {
+            pure:         ['Pure (no pitch)',    'nd-bar-dim'],
+            chordPartial: ['Chord — partial',    'nd-bar-alt'],
+            early:        ['Timing — early',     'nd-bar-mid'],
+            late:         ['Timing — late',      'nd-bar-mid'],
+            sharp:        ['Pitch — sharp',      'nd-bar-cool'],
+            flat:         ['Pitch — flat',       'nd-bar-cool'],
+        };
+        const BREAKDOWN_LABELS_COMPACT = {
+            pure: 'pure miss', chordPartial: 'chord-partial',
+            early: 'early', late: 'late', sharp: 'sharp', flat: 'flat',
+        };
         let breakdownHtml = '';
         if (tuningMode && misses > 0) {
-            const labels = {
-                pure:         ['Pure (no pitch)',    'nd-bar-dim'],
-                chordPartial: ['Chord — partial',    'nd-bar-alt'],
-                early:        ['Timing — early',     'nd-bar-mid'],
-                late:         ['Timing — late',      'nd-bar-mid'],
-                sharp:        ['Pitch — sharp',      'nd-bar-cool'],
-                flat:         ['Pitch — flat',       'nd-bar-cool'],
-            };
             breakdownHtml = '<div class="nd-sum-sections"><div class="nd-sum-subhead">Miss Breakdown</div>';
-            for (const k of Object.keys(labels)) {
+            for (const k of Object.keys(BREAKDOWN_LABELS)) {
                 const v = _diagBreakdown[k] || 0;
                 if (v === 0) continue;
                 const pct = Math.round((v / misses) * 100);
                 breakdownHtml += `
                     <div class="nd-sum-bar-row">
-                        <span class="nd-sum-bar-label">${labels[k][0]}</span>
-                        <div class="nd-sum-bar-track"><div class="nd-sum-bar-fill ${labels[k][1]}" style="--nd-bar-w:${pct}%"></div></div>
+                        <span class="nd-sum-bar-label">${BREAKDOWN_LABELS[k][0]}</span>
+                        <div class="nd-sum-bar-track"><div class="nd-sum-bar-fill ${BREAKDOWN_LABELS[k][1]}" style="--nd-bar-w:${pct}%"></div></div>
                         <span class="nd-sum-bar-val">${v} (${pct}%)</span>
                     </div>
                 `;
@@ -17551,6 +17558,14 @@ function createNoteDetector(options = {}) {
                 breakdownHtml += '</div>';
             }
             breakdownHtml += '</div>';
+        } else if (!tuningMode && misses > 0) {
+            const parts = Object.keys(BREAKDOWN_LABELS_COMPACT)
+                .map((k) => [BREAKDOWN_LABELS_COMPACT[k], _diagBreakdown[k] || 0])
+                .filter(([, v]) => v > 0)
+                .map(([label, v]) => `${v} ${label}`);
+            if (parts.length) {
+                breakdownHtml = `<div class="nd-sum-note nd-sum-miss-compact">${parts.join(' · ')}</div>`;
+            }
         }
 
         let diagnosticPlayHtml = '';
